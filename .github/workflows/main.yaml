@@ -1,41 +1,51 @@
-name: Build & Deploy to Cloud Run
+name: Build & Deploy to Azure App Service
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
-  deploy:
+  build-and-deploy:
+    name: Build and Deploy Application
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - uses: google-github-actions/auth@v2
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+          node-version: ${{ vars.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
 
-      - uses: google-github-actions/setup-gcloud@v2
+      - name: Install dependencies
+        run: npm ci
 
-      - run: gcloud auth configure-docker asia-southeast2-docker.pkg.dev
+      - name: Build Next.js application
+        run: npm run build
+        env:
+          NODE_ENV: production
+          MONGODB_URL: ${{ secrets.MONGODB_URL }}
 
-      - name: Build & Push image
+      - name: Create deployment package
         run: |
-          IMAGE="asia-southeast2-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.ARTIFACT_REPO }}/pso"
+          mkdir -p deployment-package
+          cp -r .next deployment-package/
+          cp -r public deployment-package/ 2>/dev/null || true
+          cp package*.json deployment-package/
+          cp next.config.js deployment-package/ 2>/dev/null || true
 
-          docker build -t $IMAGE:$GITHUB_SHA .
-          docker push $IMAGE:$GITHUB_SHA
+      - name: Install deployment package
+        working-directory: deployment-package
+        run: npm ci --omit=dev
 
-      - name: Deploy ke Cloud Run
-        run: |
-          IMAGE="asia-southeast2-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.ARTIFACT_REPO }}/pso"
-
-          gcloud run deploy my-app-service \
-            --image=$IMAGE:$GITHUB_SHA \
-            --platform=managed \
-            --region=${{ secrets.GCP_REGION }} \
-            --allow-unauthenticated \
-            --port=8080 \
-            --memory=512Mi \
-            --set-env-vars="MONGODB_URL=${{ secrets.MONGODB_URL }}"
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ vars.WEBAPP_NAME }}
+          slot-name: "Production"
+          package: deployment-package
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
